@@ -6,18 +6,20 @@
 # Created on 2014-07-30 12:22:52
 
 import os
-import logging
 import jinja2
 import tornado.web
 
 import config
 import json
+from db import DB
 from libs import utils
 from libs.fetcher import Fetcher
 from web.handlers import handlers, ui_modules, ui_methods
+from libs.log import Log
 
+logger_Web = Log('qiandao.Web').getlogger()
 class Application(tornado.web.Application):
-    def __init__(self):
+    def __init__(self,db=DB()):
         settings = dict(
                 template_path = os.path.join(os.path.dirname(__file__), "tpl"),
                 static_path = os.path.join(os.path.dirname(__file__), "static"),
@@ -33,25 +35,11 @@ class Application(tornado.web.Application):
 
         self.jinja_env = jinja2.Environment(
                 loader=jinja2.FileSystemLoader(settings['template_path']),
-                extensions=['jinja2.ext.autoescape', 'jinja2.ext.loopcontrols', ],
+                extensions=['jinja2.ext.loopcontrols', ],
                 autoescape=True,
                 auto_reload=config.autoreload)
 
-        if config.db_type == 'sqlite3':
-            import sqlite3_db as db
-        else:
-            import db
-
-        class DB(object):
-            user = db.UserDB()
-            tpl = db.TPLDB()
-            task = db.TaskDB()
-            tasklog = db.TaskLogDB()
-            push_request = db.PRDB()
-            redis = db.RedisDB()
-            site = db.SiteDB()
-            pubtpl = db.PubTplDB()
-        self.db = DB
+        self.db = db
 
         self.fetcher = Fetcher()
         

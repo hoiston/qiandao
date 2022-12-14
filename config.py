@@ -5,17 +5,19 @@
 #         http://binux.me
 # Created on 2014-07-30 12:21:48
 
-import os
 import hashlib
-from urllib.parse import urlparse,parse_qs
+import os
 from distutils.util import strtobool
+from urllib.parse import parse_qs, urlparse
 
 debug = bool(strtobool(os.getenv('QIANDAO_DEBUG','False')))                 # 是否启用Debug
-multiprocess = bool(strtobool(os.getenv('MULTI_PROCESS','False')))          # 是否启用多进程模式, Windows平台无效
+multiprocess = bool(strtobool(os.getenv('MULTI_PROCESS','False')))          # 是否启用多进程模式, Windows平台无效, 请谨慎使用
 autoreload = bool(strtobool(os.getenv('AUTO_RELOAD','False')))              # 是否启用自动热加载, multiprocess=True时无效
 gzip = bool(strtobool(os.getenv('GZIP','True')))                            # 是否启用gzip
 bind = str(os.getenv('BIND', '0.0.0.0'))                                    # 框架运行监听地址(0.0.0.0表示监听所有IP地址)
 port = int(os.getenv('PORT', 8923))                                         # 监听端口Port
+queue_num = int(os.getenv('QUEUE_NUM', 50))                                 # 定时执行任务队列最大数量
+worker_method = str(os.getenv('WORKER_METHOD','Queue')).upper()             # 任务定时执行方式, 默认为 Queue, 可选 Queue 或 Batch, Batch 模式为旧版定时任务执行方式, 性能较弱, 建议仅当定时执行失效时使用
 https = bool(strtobool(os.getenv('ENABLE_HTTPS', 'False')))                 # 发送的邮件链接启用HTTPS, 非框架自身HTTPS开关, 需要HTTPS请使用外部反向代理
 accesslog = bool(strtobool(os.getenv('ACCESS_LOG', 'True')))                # 是否输出Access Log
 
@@ -36,9 +38,11 @@ cookie_days = int(os.getenv('COOKIE_DAY', 5))                               # Co
 mysql_url = urlparse(os.getenv('JAWSDB_MARIA_URL', ''))                     # 格式: mysql://用户名:密码@hostname:port/数据库名?auth_plugin=
 redis_url = urlparse(os.getenv('REDISCLOUD_URL', ''))                       # 格式: (redis/http)://rediscloud:密码@hostname:port
 
-# 日志推送设置
-push_pic = os.getenv('PUSH_PIC_URL', 'https://cdn.jsdelivr.net/gh/a76yyyy/qiandao@master/web/static/img/push_pic.png')      # 日志推送默认图片地址
-push_batch_sw = bool(strtobool(os.getenv('PUSH_BATCH_SW', 'True')))         # 是否允许开启定期推送签到任务日志, 默认为True
+# 日志及推送设置
+traceback_print = bool(strtobool(os.getenv('TRACEBACK_PRINT', 'True' if debug else 'False')))    # 是否启用在控制台日志中打印Exception的TraceBack信息
+push_pic = os.getenv('PUSH_PIC_URL', 'https://gitee.com/a76yyyy/qiandao/raw/master/web/static/img/push_pic.png')    # 日志推送默认图片地址
+push_batch_sw = bool(strtobool(os.getenv('PUSH_BATCH_SW', 'True')))         # 是否允许开启定期推送签到任务日志, 默认为 True
+push_batch_delta = int(os.getenv('PUSH_BATCH_DELTA', 60))                   # 执行 PUSH_BATCH 的时间间隔, 单位为秒, 默认为 60s, 非全局推动签到任务日志间隔
 
 class mysql(object):
     host = mysql_url.hostname or 'localhost'                                # 访问MySQL的Hostname
@@ -49,10 +53,23 @@ class mysql(object):
     auth_plugin = parse_qs(mysql_url.query).get('auth_plugin',[''])[0]      # auth_plugin, 默认为空, 可修改为'mysql_native_password','caching_sha2_password'
 
 class sqlite3(object):
-    path = './config/database.db'                                           # Sqlite3数据库文件地址
+    path = os.path.join(os.path.dirname(__file__),'config','database.db')   # Sqlite3数据库文件地址
 
 # 数据库类型, 修改 sqlite3 为 mysql 使用 mysql
 db_type = os.getenv('DB_TYPE', 'sqlite3')                                   # 默认为Sqlite3, 需要使用MySQL时设置为'mysql'
+
+# SQLAlchmey配置
+class sqlalchemy(object):
+    logging_name = os.getenv('QIANDAO_SQL_LOGGING_NAME', 'qiandao.sql')     # SQLAlchmey日志名称
+    logging_level = os.getenv('QIANDAO_SQL_LOGGING_LEVEL', 'WARNING')       # SQLAlchmey日志级别
+    pool_logging_name = os.getenv('QIANDAO_SQL_POOL_LOGGING_NAME', 'qiandao.sql.pool')                  # 连接池日志名称
+    pool_logging_level = os.getenv('QIANDAO_SQL_POOL_LOGGING_LEVEL', 'WARNING')                         # 连接池日志级别
+    pool_size = int(os.getenv('QIANDAO_SQL_POOL_SIZE', '10'))               # 连接池大小
+    max_overflow = int(os.getenv('QIANDAO_SQL_MAX_OVERFLOW', '50'))         # 连接池连接数量超过 pool_size 时, 最大连接数
+    pool_pre_ping = bool(strtobool(os.getenv('QIANDAO_SQL_POOL_PRE_PING', 'True')))     # 是否在获取连接前进行 ping 操作, 默认为 True
+    pool_recycle = int(os.getenv('QIANDAO_SQL_POOL_RECYCLE', '3600'))       # 连接池中连接复用时间, 默认为 3600 秒
+    pool_timeout = int(os.getenv('QIANDAO_SQL_POOL_TIMEOUT', '60'))         # 连接池获取连接超时时间, 默认为 60 秒
+    pool_use_lifo = bool(strtobool(os.getenv('QIANDAO_SQL_POOL_USE_LIFO', 'True')))                     # 连接池是否使用 LIFO, 默认为 True
 
 # redis 连接参数, 可选
 class redis(object):
@@ -60,7 +77,8 @@ class redis(object):
     port = redis_url.port or 6379                                           # Redis的端口Port
     passwd = redis_url.password or None                                     # 访问Redis权限密码
     db = int(os.getenv('REDIS_DB_INDEX', 1))                                # 索引
-evil = int(os.getenv('QIANDAO_EVIL', 500))                                  # 1小时内登录用户或IP上限
+evil = int(os.getenv('QIANDAO_EVIL', 500))                                  # Redis连接成功后生效, 用于登录用户或IP在1小时内 操作失败(如登录, 验证, 测试等操作)次数*相应惩罚分值 达到evil值上限后自动封禁直至下一小时周期
+evil_pass_lan_ip = bool(strtobool(os.getenv('EVIL_PASS_LAN_IP','True')))    # 是否针对本机私有IP地址用户及Localhost_API请求关闭evil限制
 
 pbkdf2_iterations = int(os.getenv('PBKDF2_ITERATIONS', 400))                # pbkdf2 迭代次数
 aes_key = hashlib.sha256(os.getenv('AES_KEY', 'binux').encode('utf-8')).digest()                # AES加密密钥, 强烈建议修改
@@ -76,8 +94,8 @@ delay_max_timeout = float(os.getenv('DELAY_MAX_TIMEOUT', 29.9))             # de
 # proxies为全局代理域名列表, 默认为空[], 表示不启用全局代理; 
 # 代理格式应为'scheme://username:password@host:port',例如:proxies = ['http://admin:admin@127.0.0.1:8923','https://proxy.com:8888']; 
 # 任务级代理请在新建或修改任务时添加,任务级代理优先级大于全局代理; 
-proxies = os.getenv('PROXIES', '').split('|')               # 若希望部分地址不走代理, 请修改proxy_direct_mode及proxy_direct 
-proxy_direct_mode = os.getenv('PROXY_DIRECT_MODE', 'regexp')      # 默认为'regexp'以过滤本地请求, 可选输入:'regexp'为正则表达式匹配模式;'url'为网址匹配模式;''空则不启用全局代理黑名单 
+proxies = os.getenv('PROXIES', '').split('|')                               # 若希望部分地址不走代理, 请修改proxy_direct_mode及proxy_direct 
+proxy_direct_mode = os.getenv('PROXY_DIRECT_MODE', 'regexp')                # 默认为'regexp'以过滤本地请求, 可选输入:'regexp'为正则表达式匹配模式;'url'为网址匹配模式;''空则不启用全局代理黑名单 
 # proxy_direct_mode = os.getenv('PROXY_DIRECT_MODE', 'url')进入网址完全匹配模式, 在proxy_direct名单的url均不通过代理请求, 以'|'分隔url网址, url格式应为scheme://domain或scheme://domain:port 
 # 例如: proxy_direct = os.getenv('PROXY_DIRECT', 'http://127.0.0.1:80|https://localhost'); 
 # proxy_direct_mode= os.getenv('PROXY_DIRECT_MODE', 'regexp')进入正则表达式匹配模式, 满足正则表达式的网址均不通过代理请求; 
@@ -89,6 +107,10 @@ proxy_direct = os.getenv('PROXY_DIRECT', r"""(?xi)\A
                 ) 
 
 new_task_delay = int(os.getenv('NEW_TASK_DELAY', 1))                        # 新建任务后准备时间
+
+# ddddocr设置
+extra_onnx_name = os.getenv('EXTRA_ONNX_NAME', '').split('|')               # config目录下自定义ONNX文件名(不含 ".onnx" 后缀), 多个onnx文件名用"|"分隔
+extra_charsets_name = os.getenv('EXTRA_CHARSETS_NAME', '').split('|')       # config目录下自定义ONNX对应自定义charsets.json文件名(不含 ".json" 后缀), 多个json文件名用"|"分隔
 
 # 邮件发送相关配置
 mail_smtp = os.getenv('MAIL_SMTP',"")                                       # 邮箱SMTP服务器
@@ -106,14 +128,14 @@ ga_key = ""                                                                 # go
 user0isadmin = bool(strtobool(os.getenv('USER0ISADMIN','True'))) 
 
 try:
-    from local_config import *                                              # 修改local_config.py文件的内容不受通过git更新源码的影响
+    from local_config import *  # 修改local_config.py文件的内容不受通过git更新源码的影响
     if not hasattr(mysql, 'auth_plugin'):
         setattr(mysql, 'auth_plugin', parse_qs(mysql_url.query).get('auth_plugin',[''])[0])
 except ImportError:
     pass
 
 try:
-    from libs.utils import parse_url
+    from libs.parse_url import parse_url
     for index,proxy in enumerate(proxies):
         if isinstance(proxy,str):
             proxies[index] = parse_url(proxy)

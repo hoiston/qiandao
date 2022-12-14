@@ -1,0 +1,160 @@
+{
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": false,
+  "contributors": [
+    {
+      "login": "a76yyyy",
+      "name": "a76yyyy",
+      "avatar_url": "https://avatars.githubusercontent.com/u/56478790?v=4",
+      "profile": "http://www.a76yyyy.cn",
+      "contributions": [
+        "design",
+        "code",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "Binux",
+      "name": "Roy Binux",
+      "avatar_url": "https://avatars.githubusercontent.com/u/646451?v=4",
+      "profile": "http://binux.me/",
+      "contributions": [
+        "design",
+        "code",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "AragonSnow",
+      "name": "AragonSnow",
+      "avatar_url": "https://avatars.githubusercontent.com/u/22835918?v=4",
+      "profile": "https://github.com/AragonSnow",
+      "contributions": [
+        "code",
+        "design",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "Mark-1215",
+      "name": "Mark",
+      "avatar_url": "https://avatars.githubusercontent.com/u/36469805?v=4",
+      "profile": "https://www.quchao.net",
+      "contributions": [
+        "design",
+        "blog",
+        "example",
+        "doc"
+      ]
+    },
+    {
+      "login": "cdpidan",
+      "name": "pidan",
+      "avatar_url": "https://avatars.githubusercontent.com/u/8141453?v=4",
+      "profile": "https://github.com/cdpidan",
+      "contributions": [
+        "design"
+      ]
+    },
+    {
+      "login": "buzhibujuelb",
+      "name": "buzhibujue",
+      "avatar_url": "https://avatars.githubusercontent.com/u/24644841?v=4",
+      "profile": "https://buzhibujue.cf",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "billypon",
+      "name": "billypon",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1763302?v=4",
+      "profile": "https://github.com/billypon",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "acooler15",
+      "name": "acooler15",
+      "avatar_url": "https://avatars.githubusercontent.com/u/19186382?v=4",
+      "profile": "http://www.lingyan8.com",
+      "contributions": [
+        "code",
+        "maintenance"
+      ]
+    },
+    {
+      "login": "aa889788",
+      "name": "shxyke",
+      "avatar_url": "https://avatars.githubusercontent.com/u/16019986?v=4",
+      "profile": "https://github.com/aa889788",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "gxitm",
+      "name": "xiaoxiao",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2405087?v=4",
+      "profile": "https://github.com/gxitm",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "hiCasper",
+      "name": "hiCasper",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25276620?v=4",
+      "profile": "https://blog.hicasper.com",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "ckx000",
+      "name": "旋子",
+      "avatar_url": "https://avatars.githubusercontent.com/u/5800591?v=4",
+      "profile": "https://github.com/ckx000",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "chen8945",
+      "name": "chen8945",
+      "avatar_url": "https://avatars.githubusercontent.com/u/44148812?v=4",
+      "profile": "https://github.com/chen8945",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "seiuneko",
+      "name": "seiuneko",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25706824?v=4",
+      "profile": "https://github.com/seiuneko",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "powersee",
+      "name": "powersee",
+      "avatar_url": "https://avatars.githubusercontent.com/u/38074760?v=4",
+      "profile": "https://github.com/powersee",
+      "contributions": [
+        "code"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7,
+  "projectName": "qiandao",
+  "projectOwner": "qiandao-today",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "skipCi": true
+}

@@ -6,7 +6,7 @@
 # Created on 2014-08-08 21:06:02
 
 from .base import *
-import os
+
 
 class AboutHandler(BaseHandler):
     @tornado.web.addslash

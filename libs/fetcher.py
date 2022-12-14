@@ -5,37 +5,38 @@
 #         http://binux.me
 # Created on 2014-08-06 11:55:41
 
-import re
+import base64
 import json
 import random
-import urllib
-import base64
-import logging
+import re
 import traceback
+import urllib
 import urllib.parse as urlparse
 from datetime import datetime
-
-from tornado.httputil import HTTPHeaders
-from tornado.escape import native_str
 from io import BytesIO
 
 from jinja2.sandbox import SandboxedEnvironment as Environment
 from tornado import gen, httpclient, simple_httpclient
+from tornado.escape import native_str
+from tornado.httputil import HTTPHeaders
 
 import config
 from libs import cookie_utils, utils
 
+from .log import Log
+from .safe_eval import safe_eval
+
+logger_Fetcher = Log('qiandao.Http.Fetcher').getlogger()
 if config.use_pycurl:
     try:
         import pycurl
     except ImportError as e:
-        print(e)
+        logger_Fetcher.warning('Import PyCurl module falied: %s',e)
         pycurl = None
 else:
     pycurl = None
 local_host="http://localhost:" + str(config.port)
 NOT_RETYR_CODE = config.not_retry_code
-logger = logging.getLogger('qiandao.fetcher')
 
 class Fetcher(object):
     def __init__(self, download_size_limit=config.download_size_limit):
@@ -112,8 +113,8 @@ class Fetcher(object):
                 if not CURL_ENCODING:
                     try:
                         curl.unsetopt(pycurl.ENCODING)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger_Fetcher.debug('unsetopt pycurl.ENCODING failed: %s',e)
                 if not CURL_CONTENT_LENGTH:
                     try:
                         if headers.get('content-length'):
@@ -123,8 +124,8 @@ class Fetcher(object):
                                     "%s: %s" % (native_str(k), native_str(v))
                                     for k, v in HTTPHeaders(headers).get_all()]
                             )
-                    except:
-                        pass
+                    except Exception as e:
+                        logger_Fetcher.debug('unsetopt pycurl.CONTENT_LENGTH failed: %s',e)
                 if config.dns_server:
                     curl.setopt(pycurl.DNS_SERVERS,config.dns_server)
                 curl.setopt(pycurl.NOPROGRESS, 0)
@@ -196,7 +197,7 @@ class Fetcher(object):
 
         def build_headers(headers):
             result = []
-            if headers:
+            if headers and isinstance(headers, HTTPHeaders):
                 for k, v in headers.get_all():
                     result.append(dict(name=k, value=v))
             return result
@@ -231,7 +232,7 @@ class Fetcher(object):
                     try:
                         _ = json.dumps(ret['postData']['params'])
                     except UnicodeDecodeError:
-                        logger.error('params encoding error')
+                        logger_Fetcher.error('params encoding error')
                         del ret['postData']['params']
 
             return ret
@@ -302,11 +303,15 @@ class Fetcher(object):
                 try:
                     return str(response.headers._dict).replace('\'', '')
                 except Exception as e:
-                    traceback.print_exc()
+                    if config.traceback_print:
+                        traceback.print_exc()
+                    logger_Fetcher.error('Run rule failed: %s', str(e))
                 try:
                     return json.dumps(response.headers._dict)
                 except Exception as e:
-                    traceback.print_exc()
+                    if config.traceback_print:
+                        traceback.print_exc()
+                    logger_Fetcher.error('Run rule failed: %s', str(e))
             else:
                 return ''
 
@@ -327,7 +332,7 @@ class Fetcher(object):
                 msg = 'Fail assert: %s from failed_asserts' % json.dumps(r, ensure_ascii=False)
                 break
 
-        if not success and msg and (response.error or response.reason):
+        if not success and msg and (response.error or (response.reason and str(response.reason) != 'OK')):
             msg += ', \\r\\nResponse Error : %s' % str(response.error or response.reason)
 
         for r in rule.get('extract_variables') or '':
@@ -403,7 +408,7 @@ class Fetcher(object):
                     try:
                         _ = json.dumps(request['postData']['params'])
                     except UnicodeDecodeError:
-                        logger.error('params encoding error')
+                        logger_Fetcher.error('params encoding error')
                         del request['postData']['params']
             return request
 
@@ -439,40 +444,46 @@ class Fetcher(object):
     async def build_response(self, obj, proxy={}, CURL_ENCODING=config.curl_encoding, CURL_CONTENT_LENGTH=config.curl_length, EMPTY_RETRY = config.empty_retry):
         try:
             req, rule, env = self.build_request(obj, download_size_limit=self.download_size_limit,proxy=proxy,CURL_ENCODING=CURL_ENCODING,CURL_CONTENT_LENGTH=CURL_CONTENT_LENGTH)
-            response =  await gen.convert_yielded(self.client.fetch(req))
+            response =  await self.client.fetch(req)
+            logger_Fetcher.debug("%d %s %s %.2fms",
+            response.code,
+            response.request.method,
+            response.request.url,
+            1000.0 * response.request_time)
         except httpclient.HTTPError as e:
             try:
                 if config.allow_retry and pycurl:
                     if e.__dict__.get('errno','') == 61:
-                        logger.warning('{} {} [Warning] {} -> Try to retry!'.format(req.method,req.url,e))
+                        logger_Fetcher.warning('{} {} [Warning] {} -> Try to retry!'.format(req.method,req.url,e))
                         req, rule, env = self.build_request(obj, download_size_limit=self.download_size_limit,proxy=proxy,CURL_ENCODING=False,CURL_CONTENT_LENGTH=CURL_CONTENT_LENGTH)
-                        e.response =  await gen.convert_yielded(self.client.fetch(req))
+                        e.response =  await self.client.fetch(req)
                     elif e.code == 400 and e.message == 'Bad Request' and req and req.headers.get('content-length'):
-                        logger.warning('{} {} [Warning] {} -> Try to retry!'.format(req.method,req.url,e))
+                        logger_Fetcher.warning('{} {} [Warning] {} -> Try to retry!'.format(req.method,req.url,e))
                         req, rule, env = self.build_request(obj, download_size_limit=self.download_size_limit,proxy=proxy,CURL_ENCODING=CURL_ENCODING,CURL_CONTENT_LENGTH=False)
-                        e.response =  await gen.convert_yielded(self.client.fetch(req))
+                        e.response =  await self.client.fetch(req)
                     elif e.code not in NOT_RETYR_CODE or (EMPTY_RETRY and not e.response):
                         try:
-                            logger.warning('{} {} [Warning] {} -> Try to retry!'.format(req.method,req.url,e))
+                            logger_Fetcher.warning('{} {} [Warning] {} -> Try to retry!'.format(req.method,req.url,e))
                             client = simple_httpclient.SimpleAsyncHTTPClient()
-                            e.response =  await gen.convert_yielded(client.fetch(req))
+                            e.response =  await client.fetch(req)
                         except Exception:
-                            logger.error(e.message.replace('\\r\\n','\r\n') or e.response.replace('\\r\\n','\r\n') or Exception)
+                            logger_Fetcher.error(e.message.replace('\\r\\n','\r\n') or e.response.replace('\\r\\n','\r\n') or Exception)
                     else:
                         try:
-                            logger.warning('{} {} [Warning] {}'.format(req.method,req.url,e))
+                            logger_Fetcher.warning('{} {} [Warning] {}'.format(req.method,req.url,e))
                         except Exception:
-                            logger.error(e.message.replace('\\r\\n','\r\n') or e.response.replace('\\r\\n','\r\n') or Exception)
+                            logger_Fetcher.error(e.message.replace('\\r\\n','\r\n') or e.response.replace('\\r\\n','\r\n') or Exception)
                 else:
-                    logger.warning('{} {} [Warning] {}'.format(req.method,req.url,e))
+                    logger_Fetcher.warning('{} {} [Warning] {}'.format(req.method,req.url,e))
             finally:
                 if 'req' not in locals().keys():
                     tmp = {'env':obj['env'],'rule':obj['rule']}
-                    tmp['request'] = {'method': 'GET', 'url': 'http://127.0.0.1:8923/util/unicode?content=', 'headers': [], 'cookies': []}
+                    tmp['request'] = {'method': 'GET', 'url': 'api://util/unicode?content=', 'headers': [], 'cookies': []}
                     req, rule, env = self.build_request(tmp)
                     e.response = httpclient.HTTPResponse(request=req,code=e.code,reason=e.message,buffer=BytesIO(str(e).encode()))
                 if not e.response:
-                    traceback.print_exc()
+                    if config.traceback_print:
+                        traceback.print_exc()
                     e.response = httpclient.HTTPResponse(request=req,code=e.code,reason=e.message,buffer=BytesIO(str(e).encode()))
                 return rule, env, e.response
         return rule, env, response
@@ -502,7 +513,7 @@ class Fetcher(object):
         }
         """
 
-        rule, env, response = await gen.convert_yielded(self.build_response(obj, proxy, CURL_ENCODING, CURL_CONTENT_LENGTH, EMPTY_RETRY))
+        rule, env, response = await self.build_response(obj, proxy, CURL_ENCODING, CURL_CONTENT_LENGTH, EMPTY_RETRY)
 
         env['session'].extract_cookies_to_jar(response.request, response)
         success, msg = self.run_rule(response, rule, env)
@@ -515,10 +526,18 @@ class Fetcher(object):
             }
 
     FOR_START = re.compile('{%\s*for\s+(\w+)\s+in\s+(\w+)\s*%}')
-    FOR_END = re.compile('{%\s*endfor\s*%}')
+    IF_START = re.compile('{%\s*if\s+(.+)\s*%}')
+    ELSE_START = re.compile('{%\s*else\s*%}')
+    PARSE_END = re.compile('{%\s*end(for|if)\s*%}')
 
     def parse(self, tpl):
         stmt_stack = []
+
+        def __append(entry):
+            if stmt_stack[-1]['type'] == 'if':
+                stmt_stack[-1][stmt_stack[-1]['parse']].append(entry)
+            elif stmt_stack[-1]['type'] == 'for':
+                stmt_stack[-1]['body'].append(entry)
 
         for i, entry in enumerate(tpl):
             if 'type' in entry:
@@ -531,15 +550,27 @@ class Fetcher(object):
                     'from': m.group(2),
                     'body': []
                 })
-            elif self.FOR_END.match(entry['request']['url']):
-                if stmt_stack and stmt_stack[-1]['type'] == 'for':
+            elif self.IF_START.match(entry['request']['url']):
+                m = self.IF_START.match(entry['request']['url'])
+                stmt_stack.append({
+                    'type': 'if',
+                    'condition': m.group(1),
+                    'parse': 'true',
+                    'true': [],
+                    'false': []
+                })
+            elif self.ELSE_START.match(entry['request']['url']):
+                stmt_stack[-1]['parse'] = 'false'
+            elif self.PARSE_END.match(entry['request']['url']):
+                entry_type = stmt_stack and stmt_stack[-1]['type']
+                if entry_type == 'for' or entry_type == 'if':
                     entry = stmt_stack.pop()
                     if stmt_stack:
-                        stmt_stack[-1]['body'].append(entry)
+                        __append(entry)
                     else:
                         yield entry
             elif stmt_stack:
-                stmt_stack[-1]['body'].append({
+                __append({
                     'type': 'request',
                     'entry': entry,
                 })
@@ -567,20 +598,34 @@ class Fetcher(object):
             elif block['type'] == 'for':
                 for each in env['variables'].get(block['from'], []):
                     env['variables'][block['target']] = each
-                    env = await gen.convert_yielded(self.do_fetch(block['body'], env, proxies=[proxy], request_limit=request_limit))
+                    env = await self.do_fetch(block['body'], env, proxies=[proxy], request_limit=request_limit)
+            elif block['type'] == 'if':
+                try:
+                    condition = safe_eval(block['condition'],env['variables'])
+                except NameError:
+                    condition = False
+                except ValueError as e:
+                    if len(str(e)) > 20 and str(e)[:20] == "<class 'NameError'>:":
+                        condition = False
+                    else:
+                        raise e
+                if condition:
+                    await self.do_fetch(block['true'], env, proxies=[proxy], request_limit=request_limit)
+                else:
+                    await self.do_fetch(block['false'], env, proxies=[proxy], request_limit=request_limit)
             elif block['type'] == 'request':
                 entry = block['entry']
                 try:
                     request_limit -= 1
-                    result = await gen.convert_yielded(self.fetch(dict(
+                    result = await self.fetch(dict(
                         request = entry['request'],
                         rule = entry['rule'],
                         env = env,
-                        ), proxy=proxy))
+                        ), proxy=proxy)
                     env = result['env']
                 except Exception as e:
                     if config.debug:
-                        logging.exception(e)
+                        logger_Fetcher.exception(e)
                     raise Exception('Failed at %d/%d request, \\r\\nError: %r, \\r\\nRequest URL: %s' % (
                         i+1, len(tpl), e, entry['request']['url']))
                 if not result['success']:

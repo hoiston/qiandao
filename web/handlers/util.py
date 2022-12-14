@@ -1,28 +1,38 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import re
-import json
 import datetime
+import json
+import os
+import re
 import time
-import urllib
-import pytz
 import traceback
+import urllib
+
+import pytz
+
+from libs.log import Log
+
+logger_Web_Util = Log('qiandao.Web.Util').getlogger()
 try:
     import ddddocr
 except ImportError as e:
-    print(e)
+    logger_Web_Util.warning('Import DdddOCR module falied: %s',e)
     ddddocr = None
-import requests
 import asyncio
-import functools
-from .base import *
-from tornado import gen
 import base64
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import  PKCS1_v1_5
+import functools
+
+import requests
 from Crypto import Random
-from config import delay_max_timeout,strtobool
+from Crypto.Cipher import PKCS1_v1_5
+from Crypto.PublicKey import RSA
+from tornado import gen
+
+from config import delay_max_timeout, strtobool
+
+from .base import *
+
 
 def request_parse(req_data):
     '''解析请求数据并以json形式返回'''
@@ -37,7 +47,8 @@ class UtilDelayParaHandler(BaseHandler):
         try:
             seconds = float(self.get_argument("seconds", 0))
         except Exception as e:
-            traceback.print_exc()
+            if config.traceback_print:
+                traceback.print_exc()
             await gen.sleep(0.0)
             self.write(u'Error, delay 0.0 second.')
             return
@@ -57,7 +68,8 @@ class UtilDelayIntHandler(BaseHandler):
         try:
             seconds = float(seconds)
         except Exception as e:
-            traceback.print_exc()
+            if config.traceback_print:
+                traceback.print_exc()
             self.write(u'delay %s second.' % seconds)
             return
         if seconds < 0:
@@ -76,7 +88,8 @@ class UtilDelayHandler(BaseHandler):
         try:
             seconds = float(seconds)
         except Exception as e:
-            traceback.print_exc()
+            if config.traceback_print:
+                traceback.print_exc()
             self.write(u'delay %s second.' % seconds)
             return
         if seconds < 0:
@@ -102,7 +115,7 @@ class TimeStampHandler(BaseHandler):
             tmp = datetime.datetime.fromtimestamp
 
             if not ts:
-                # 当前本机时间戳，本机时间和北京时间
+                # 当前本机时间戳, 本机时间和北京时间
                 Rtv[u"完整时间戳"] = time.time()
                 Rtv[u"时间戳"] = int(Rtv[u"完整时间戳"])
                 Rtv[u"16位时间戳"] = int(Rtv[u"完整时间戳"]*1000000)
@@ -389,7 +402,7 @@ class UtilRSAHandler(BaseHandler):
 
 class toolboxHandler(BaseHandler):
     async def get(self, userid):
-        user = self.current_user
+        self.current_user["isadmin"] or self.check_permission({"userid":int(userid)}, 'r')
         await self.render('toolbox.html', userid=userid)
 
     async def post(self, userid):
@@ -398,27 +411,172 @@ class toolboxHandler(BaseHandler):
             pwd = self.get_argument("pwd", "")
             f = self.get_argument("f", "")
             if (email) and (pwd) and (f):
-                if self.db.user.challenge_MD5(email, pwd) or self.db.user.challenge(email, pwd):
-                    userid = self.db.user.get(email=email, fields=('id'))['id']
-                    text_data = self.db.user.get(email=email, fields=('notepad'))['notepad']
-                    new_data = self.get_argument("data", "")
-                    if (f.find('write') > -1 ): 
-                        text_data = new_data
-                        self.db.user.mod(userid, notepad=text_data)
-                    elif (f.find('append') > -1):
-                        if text_data is not None:
-                            text_data = text_data + '\r\n' + new_data
-                        else:
+                async with self.db.transaction() as sql_session:
+                    if await self.db.user.challenge_MD5(email, pwd, sql_session=sql_session) or await self.db.user.challenge(email, pwd, sql_session=sql_session):
+                        notepadid=self.get_argument("id_notepad", 1)
+                        userid = (await self.db.user.get(email=email, fields=('id',), sql_session=sql_session))['id']
+                        text_data = (await self.db.notepad.get(userid, notepadid, fields=('content',), sql_session=sql_session))['content']
+                        new_data = self.get_argument("data", "")
+                        if (f.find('write') > -1 ): 
                             text_data = new_data
-                        self.db.user.mod(userid, notepad=text_data)
-                    self.write(text_data)
-                    return
-                else:
-                    raise Exception(u"账号密码错误")
+                            await self.db.notepad.mod(userid, notepadid, content=text_data, sql_session=sql_session)
+                        elif (f.find('append') > -1):
+                            if text_data is not None:
+                                text_data = text_data + '\r\n' + new_data
+                            else:
+                                text_data = new_data
+                            await self.db.notepad.mod(userid, notepadid, content=text_data, sql_session=sql_session)
+                        self.write(text_data)
+                        return
+                    else:
+                        raise Exception(u"账号密码错误")
             else:
                 raise Exception(u"参数不完整，请确认")
         except Exception as e:
             self.write(str(e))
+            return
+
+class toolbox_notepad_Handler(BaseHandler):
+    @tornado.web.authenticated
+    async def get(self,userid=None,notepadid=1):
+        if userid is None:
+            raise HTTPError(405)
+        self.current_user["isadmin"] or self.check_permission({"userid":int(userid)}, 'r')
+        notepadlist = await self.db.notepad.list(fields=('notepadid','content'), limit=20, userid=userid )
+        notepadlist.sort(key=lambda x:x['notepadid'])
+        if len(notepadlist) == 0:
+            if await self.db.user.get(id=userid, fields=('id',)) is not None:
+                await self.db.notepad.add(dict(userid=userid, notepadid=1))
+                notepadlist = await self.db.notepad.list(fields=('notepadid','content'), limit=20, userid=userid )
+            else:
+                raise HTTPError(404, log_message=u"用户不存在或未创建记事本",reason=u"用户不存在或未创建记事本")
+        if int(notepadid) == 0:
+            notepadid = notepadlist[-1]['notepadid']
+        await self.render('toolbox-notepad.html', notepad_id = int(notepadid), notepad_list=notepadlist, userid=userid)
+        return
+
+    # @tornado.web.authenticated
+    async def post(self,userid=None):
+        try:
+            email = self.get_argument("email", "")
+            pwd = self.get_argument("pwd", "")
+            f = self.get_argument("f", "")
+            if (email) and (pwd) and (f):
+                async with self.db.transaction() as sql_session:
+                    if await self.db.user.challenge_MD5(email, pwd, sql_session=sql_session) or await self.db.user.challenge(email, pwd, sql_session=sql_session):
+                        notepadid = int(self.get_argument("id_notepad", 1))
+                        userid = (await self.db.user.get(email=email, fields=('id',), sql_session=sql_session))['id']
+                        notepad = await self.db.notepad.get(userid, notepadid, fields=('content',), sql_session=sql_session)
+                        if not notepad:
+                            if notepadid == 1:
+                                await self.db.notepad.add(dict(userid=userid, notepadid=notepadid), sql_session=sql_session)
+                            else:
+                                raise Exception(u"记事本不存在")
+                        text_data = notepad['content']
+                        new_data = self.get_argument("data", "")
+                        if (f.find('write') > -1 ): 
+                            text_data = new_data
+                            await self.db.notepad.mod(userid, notepadid, content=text_data, sql_session=sql_session)
+                        elif (f.find('append') > -1):
+                            if text_data is not None:
+                                text_data = text_data + '\r\n' + new_data
+                            else:
+                                text_data = new_data
+                            await self.db.notepad.mod(userid, notepadid, content=text_data, sql_session=sql_session)
+                        self.write(text_data)
+                        return
+                    else:
+                        raise Exception(u"账号密码错误")
+            else:
+                raise Exception(u"参数不完整，请确认")
+        except Exception as e:
+            if config.traceback_print:
+                traceback.print_exc()
+            if (str(e).find('get user need id or email') > -1):
+                e = u'请输入用户名/密码'
+            self.write(str(e))
+            self.set_status(400)
+            logger_Web_Handler.error('UserID: %s modify Notepad_Toolbox failed! Reason: %s', userid or '-1', str(e))
+            return
+
+class toolbox_notepad_list_Handler(BaseHandler):
+    async def get(self,userid=None,notepadid=1):
+        if userid is None:
+            raise HTTPError(405)
+        self.current_user["isadmin"] or self.check_permission({"userid":int(userid)}, 'r')
+        notepadlist = await self.db.notepad.list(fields=('notepadid','content'), limit=20, userid=userid )
+        notepadlist.sort(key=lambda x:x['notepadid'])
+        if len(notepadlist) == 0:
+            if await self.db.user.get(id=userid, fields=('id',)) is not None:
+                await self.db.notepad.add(dict(userid=userid, notepadid=1))
+                notepadlist = await self.db.notepad.list(fields=('notepadid','content'), limit=20, userid=userid )
+            else:
+                raise HTTPError(404, log_message=u"用户不存在或未创建记事本",reason=u"用户不存在或未创建记事本")
+        if int(notepadid) == 0:
+            notepadid = notepadlist[-1]['notepadid']
+        await self.render('toolbox-notepad.html', notepad_id = notepadid, notepad_list=notepadlist, userid=userid)
+        return
+    
+    async def post(self,userid=None):
+        try:
+            email = self.get_argument("email", "")
+            pwd = self.get_argument("pwd", "")
+            f = self.get_argument("f", "list")
+            if (email) and (pwd) and (f):
+                async with self.db.transaction() as sql_session:
+                    if await self.db.user.challenge_MD5(email, pwd, sql_session=sql_session) or await self.db.user.challenge(email, pwd, sql_session=sql_session):
+                        userid = (await self.db.user.get(email=email, fields=('id',), sql_session=sql_session))['id']
+                        notepadid = self.get_argument("id_notepad", "-1")
+                        if not notepadid:
+                            notepadid = -1
+                        else:
+                            notepadid = int(notepadid)
+                        notepadlist = await self.db.notepad.list(fields=('notepadid',), limit=20, userid=userid, sql_session=sql_session )
+                        notepadlist = [x['notepadid'] for x in notepadlist]
+                        notepadlist.sort()
+                        if len(notepadlist) == 0:
+                            raise Exception(u"无法获取该用户记事本编号")
+                        if f.find('add') > -1:
+                            if len(notepadlist) >= 20:
+                                raise Exception(u"记事本数量超过上限, limit: 20")
+                            new_data = self.get_argument("data", '')
+                            if new_data == '':
+                                new_data = None
+                            if notepadid == -1:
+                                notepadid = notepadlist[-1]+1
+                            elif notepadid in notepadlist:
+                                raise Exception(u"记事本编号已存在, id_notepad: %s" % notepadid)
+                            await self.db.notepad.add(dict(userid=userid, notepadid=notepadid, content=new_data), sql_session=sql_session)
+                            self.write(u"添加成功, id_notepad: %s" % (notepadid))
+                            return
+                        elif f.find('delete') > -1:
+                            if notepadid > 0:
+                                if notepadid not in notepadlist:
+                                    raise Exception(u"记事本编号不存在, id_notepad: %s" % notepadid)
+                                if notepadid == 1:
+                                    raise Exception(u"默认记事本不能删除")
+                                await self.db.notepad.delete(userid, notepadid, sql_session=sql_session)
+                                self.write(u"删除成功, id_notepad: %s" % (notepadid))
+                                return
+                            else:
+                                raise Exception(u"id_notepad参数不完整, 请确认")
+                        elif f.find('list') > -1:
+                            self.write(notepadlist)
+                            return
+                        else:
+                            raise Exception(u"参数不完整, 请确认")
+                    else:
+                        raise Exception(u"账号密码错误")
+            else:
+                raise Exception(u"参数不完整, 请确认")
+        except Exception as e:
+            if config.traceback_print:
+                traceback.print_exc()
+            if (str(e).find('get user need id or email') > -1):
+                e = u'请输入用户名/密码'
+            self.write(str(e))
+            self.set_status(400)
+            logger_Web_Handler.error('UserID: %s %s Notepad_Toolbox failed! Reason: %s', userid or '-1', f, str(e))
             return
 
 class DdddOCRServer(object):
@@ -426,8 +584,17 @@ class DdddOCRServer(object):
         self.oldocr = ddddocr.DdddOcr(old=True,show_ad=False)
         self.ocr = ddddocr.DdddOcr(show_ad=False)
         self.det = ddddocr.DdddOcr(det=True,show_ad=False)
+        self.extra = {}
+        if len(config.extra_onnx_name) == len(config.extra_charsets_name) and config.extra_onnx_name[0] and config.extra_charsets_name[0]:
+            for i in range(len(config.extra_onnx_name)):
+                self.extra[config.extra_onnx_name[i]]=ddddocr.DdddOcr(show_ad=False,
+                                                               import_onnx_path=os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),"config",f"{config.extra_onnx_name[i]}.onnx"),
+                                                               charsets_path=os.path.join(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),"config",f"{config.extra_charsets_name[i]}.json"))
+                logger_Web_Util.info(f"成功加载自定义Onnx模型: {config.extra_onnx_name[i]}.onnx")
 
-    def classification(self, img: bytes, old=False):
+    def classification(self, img: bytes, old=False, extra_onnx_name=""):
+        if extra_onnx_name:
+            return self.extra[extra_onnx_name].classification(img)
         if old:
             return self.oldocr.classification(img)
         else:
@@ -448,6 +615,7 @@ class DdddOcrHandler(BaseHandler):
                 img = self.get_argument("img", "")
                 imgurl = self.get_argument("imgurl", "")
                 old = bool(strtobool(self.get_argument("old", "False"))) 
+                extra_onnx_name = self.get_argument("extra_onnx_name", "")
                 if img:
                     img = base64.b64decode(img)
                 elif imgurl:
@@ -456,7 +624,7 @@ class DdddOcrHandler(BaseHandler):
                     img = base64.b64decode(base64_data)
                 else:
                     raise Exception(400)
-                Rtv[u"Result"] = DdddOCRServer.classification(img,old=old)
+                Rtv[u"Result"] = DdddOCRServer.classification(img,old=old, extra_onnx_name=extra_onnx_name)
                 Rtv[u"状态"] = "OK"
             else:
                 raise Exception(404)
@@ -476,10 +644,13 @@ class DdddOcrHandler(BaseHandler):
                     img = body_dict.get("img", "")
                     imgurl = body_dict.get("imgurl", "")
                     old = bool(strtobool(body_dict.get("old", "False")))
+                    extra_onnx_name = body_dict.get("extra_onnx_name", "")
                 else:
                     img = self.get_argument("img", "")
                     imgurl = self.get_argument("imgurl", "")
                     old = bool(strtobool(self.get_argument("old", "False"))) 
+                    extra_onnx_name = self.get_argument("extra_onnx_name", "")
+
                 if img:
                     img = base64.b64decode(img)
                 elif imgurl:
@@ -488,7 +659,7 @@ class DdddOcrHandler(BaseHandler):
                     img = base64.b64decode(base64_data)
                 else:
                     raise Exception(400)
-                Rtv[u"Result"] = DdddOCRServer.classification(img,old=old)
+                Rtv[u"Result"] = DdddOCRServer.classification(img, old=old, extra_onnx_name=extra_onnx_name)
                 Rtv[u"状态"] = "OK"
             else:
                 raise Exception(404)
@@ -567,6 +738,12 @@ handlers = [
     ('/util/string/replace', UtilStrReplaceHandler),
     ('/util/rsa', UtilRSAHandler),
     ('/util/toolbox/(\d+)', toolboxHandler),
+    ('/util/toolbox/notepad', toolbox_notepad_Handler),
+    ('/util/toolbox/(\d+)/notepad', toolbox_notepad_Handler),
+    ('/util/toolbox/(\d+)/notepad/(\d+)', toolbox_notepad_Handler),
+    ('/util/toolbox/notepad/list', toolbox_notepad_list_Handler),
+    ('/util/toolbox/(\d+)/notepad/list', toolbox_notepad_list_Handler),
+    ('/util/toolbox/(\d+)/notepad/list/(\d+)', toolbox_notepad_list_Handler),
     ('/util/dddd/ocr', DdddOcrHandler),
     ('/util/dddd/det', DdddDetHandler),
 ]

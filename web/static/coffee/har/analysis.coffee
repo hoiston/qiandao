@@ -3,15 +3,24 @@
 #         http://binux.me
 # Created on 2014-08-02 10:07:33
 
-window.jinja_globals = ['md5','quote_chinese','utf8','unicode','timestamp','random','date_time','is_num','add','sub','multiply','divide','Faker','dict','lipsum']
+window.jinja_globals = [
+    'quote_chinese', 'bool', 'utf8', 'unicode', 'timestamp', 'date_time',
+    'is_num', 'add', 'sub', 'multiply', 'divide', 'Faker', 'b64decode',
+    'b64encode', 'to_uuid', 'md5', 'sha1', 'password_hash', 'hash',
+    'aes_encrypt', 'aes_decrypt', 'regex_replace', 'regex_escape',
+    'regex_search', 'regex_findall', 'ternary', 'random', 'shuffle',
+    'mandatory', 'type_debug', 'dict', 'lipsum', 'range'
+]
 jinja_globals = window.jinja_globals
 
 Array.prototype.some ?= (f) ->
-  (return true if f x) for x in @
+  for x in @
+    return true if f x
   return false
 
 Array.prototype.every ?= (f) ->
-  (return false if not f x) for x in @
+  for x in @
+    return false if not f x
   return true
 
 define (require, exports, module) ->
@@ -44,7 +53,7 @@ define (require, exports, module) ->
     cookie_jar = new utils.CookieJar()
     for entry in har.log.entries
       cookies = {}
-      for cookie in cookie_jar.getCookiesSync(entry.request.url, {now: new Date(entry.startedDateTime)})
+      for cookie in cookie_jar.getCookiesSync(entry.request.url, { now: new Date(entry.startedDateTime) })
         cookies[cookie.key] = cookie.value
       for cookie in entry.request.cookies
         cookie.checked = false
@@ -70,17 +79,17 @@ define (require, exports, module) ->
           #})), entry.request.url)
 
       # update cookie from response
-      for header in (h for h in entry.response?.headers when h.name.toLowerCase() == 'set-cookie')
+      for header in (h for h in entry.response?.headers || [] when h.name.toLowerCase() == 'set-cookie') || []
         entry.filter_set_cookie = true
         try
-          cookie_jar.setCookieSync(header.value, entry.request.url, {now: new Date(entry.startedDateTime)})
+          cookie_jar.setCookieSync(header.value, entry.request.url, { now: new Date(entry.startedDateTime) })
         catch error
           console.error(error)
 
     return har
 
   sort = (har) ->
-    har.log.entries = har.log.entries.sort((a, b) ->
+    har.log.entries = har.log.entries?.sort((a, b) ->
       if a.pageref > b.pageref
         1
       else if a.pageref < b.pageref
@@ -114,7 +123,7 @@ define (require, exports, module) ->
       result = []
       try
         for key, value of utils.querystring_parse(entry.request.postData.text)
-          result.push({name: key, value: value})
+          result.push({ name: key, value: value })
         entry.request.postData.params = result
       catch error
         console.error(error)
@@ -167,9 +176,9 @@ define (require, exports, module) ->
         entry.response?.content.text = undefined
     return har
 
-  exports =
-    analyze: (har, variables={}) ->
-      if har.log
+  exports = {
+    analyze: (har, variables = {}) ->
+      if har.log?
         replace_variables((xhr mime_type analyze_cookies headers sort post_data rm_content har), variables)
       else
         har
@@ -255,7 +264,7 @@ define (require, exports, module) ->
         (h.value for h in entry.request.headers when h.checked)
         (c.name for c in entry.request.cookies when c.checked)
         (c.value for c in entry.request.cookies when c.checked)
-        [entry.request.postData?.text,]
+        [entry.request.postData?.text, ]
       ].map((list) ->
         for string in list
           for each in exports.variables(string)
@@ -274,5 +283,6 @@ define (require, exports, module) ->
         for each in @.variables_in_entry entry
           result.push each
       return result
+  }
 
   return exports

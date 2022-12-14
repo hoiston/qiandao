@@ -1,22 +1,17 @@
-#! /usr/bin/env python
 # -*- coding: utf-8 -*-
 # vim:fenc=utf-8
 #
 # Copyright © 2016 Binux <roy@binux.me>
-
-import sys
+import asyncio
 import platform
-import logging
+import sys
+
+import requests
 import tornado.log
-from tornado.ioloop import IOLoop, PeriodicCallback
-from tornado.httpserver import HTTPServer
 
 import config
-from web.app import Application
-from worker import MainWorker
-
-from db import sqlite3_db_task_converter
-import requests
+from db import db_converter
+from libs.log import Log
 
 requests.packages.urllib3.disable_warnings()
 
@@ -25,42 +20,76 @@ if __name__ == "__main__":
         import importlib
         importlib.reload(sys)
     # init logging
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG if config.debug else logging.INFO)
-    channel = logging.StreamHandler(sys.stdout)
-    channel.setFormatter(tornado.log.LogFormatter())
-    logger.addHandler(channel)
+    logger = Log().getlogger()
+    logger_Qiandao = Log('qiandao.Run').getlogger()
 
-    if not config.debug:
+    if config.debug:
+        import logging
         channel = logging.StreamHandler(sys.stderr)
         channel.setFormatter(tornado.log.LogFormatter())
         channel.setLevel(logging.WARNING)
-        logger.addHandler(channel)
+        logger_Qiandao.addHandler(channel)
 
     if not config.accesslog:
-        logging.getLogger('tornado.access').disabled = True
+        tornado.log.access_log.disabled = True
+    else:
+        tornado.log.access_log = Log('tornado.access').getlogger()
+        # tornado.log.app_log = Log('tornado.application').getlogger()
 
     if len(sys.argv) > 2 and sys.argv[1] == '-p' and sys.argv[2].isdigit():
         port = int(sys.argv[2])
     else:
         port = config.port
-    converter = sqlite3_db_task_converter.DBconverter()
-    converter.ConvertNewType() 
+
     if platform.system() == 'Windows':
         config.multiprocess = False
     if config.multiprocess and config.autoreload:
         config.autoreload = False
 
-    http_server = HTTPServer(Application(), xheaders=True)
-    http_server.bind(port, config.bind)
-    if config.multiprocess:
-        http_server.start(num_processes=0)
-    else:
-        http_server.start()
+    try:
+        from db import DB
+        from db.basedb import engine
+        database = DB()
+        converter = db_converter.DBconverter()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        run = asyncio.ensure_future(converter.ConvertNewType(database) , loop=loop)
+        loop.run_until_complete(run)
 
-    worker = MainWorker()
-    PeriodicCallback(worker, config.check_task_loop).start()
-    worker()
+        from tornado.httpserver import HTTPServer
 
-    logging.info("http server started on %s:%s", config.bind, port)
-    IOLoop.instance().start()
+        from web.app import Application
+        http_server = HTTPServer(Application(database), xheaders=True)
+        http_server.bind(port, config.bind)
+        if config.multiprocess:
+            http_server.start(num_processes=0)
+        else:
+            http_server.start()
+
+        from tornado.ioloop import IOLoop, PeriodicCallback
+
+        from worker import BatchWorker, QueueWorker
+        io_loop = IOLoop.instance()
+        try:
+            if config.worker_method.upper() == 'QUEUE':
+                worker = QueueWorker(database)
+                io_loop.add_callback(worker)
+            elif config.worker_method.upper() == 'BATCH':
+                worker = BatchWorker(database)
+                PeriodicCallback(worker, config.check_task_loop).start()
+            else:
+                raise Exception('worker_method must be Queue or Batch, please check config!')
+        except Exception as e:
+            logger.exception('worker start error!')
+            raise KeyboardInterrupt()
+
+        logger_Qiandao.info("Http Server started on %s:%s", config.bind, port)
+        io_loop.start()
+    except KeyboardInterrupt :
+        logger_Qiandao.info("Http Server is being manually interrupted... ")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        run = asyncio.ensure_future(engine.dispose() , loop=loop)
+        loop.run_until_complete(run)
+        logger_Qiandao.info("Http Server is ended. ")
+

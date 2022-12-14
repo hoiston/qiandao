@@ -92,7 +92,7 @@
               {% endif %}
               
           </td>
-          <td style="text-align:center;color: #cacaca;"><a style="color:#518cb9;" title="成功计次">{{ task.success_count }}</a> / <a style="color:#c15454;" title="失败计次">{{ task.failed_count }}</a></td>
+          <td style="text-align:center;color: #cacaca;"><a style="color:#518cb9;" data-method="Get" href="/task/{{ task.id }}/log/del/Success" data-confirm="是否要删除任务执行成功日志?" title="成功计次">{{ task.success_count }}</a> / <a style="color:#c15454;" data-method="Get" href="/task/{{ task.id }}/log/del/Fail" data-confirm="是否要删除任务执行失败日志?" title="失败计次">{{ task.failed_count }}</a></td>
           <td><span data-toggle="popover" data-content="{{ format_date(task.last_success,-8*60,True,False,True) if task.last_success else '从未' }}">{{ format_date(task.last_success) if task.last_success else '从未' }}</span></td>
 
           <td style="text-align:center">{{ my_status(task) }}</td>
@@ -162,7 +162,7 @@
         <tr class="{{ tplgroup }} tplgroup" >
           <td>
             {% if  tpl.updateable == 1 %}
-            <a class="btn btn-default btn-xs" href="/tpl/{{ tpl.id }}/edit?tplurl={{ tpl.tplurl | urlencode }}?tpldata={{ tpl.tpldata | urlencode }}" target="_blank" title="更新模板">更新
+            <a class="btn btn-default btn-xs" href="/tpl/{{ tpl.id }}/edit?tplurl={{ tpl.tplurl | urlencode }}" target="_blank" title="更新模板">更新
             </a>
             {% endif %}
             {{ utils.tplname(tpl) }}
@@ -236,7 +236,7 @@
    **/
   function allTaskgroupChecked(checkbox){
     var tmp = checkbox.name
-    var tasknodes = document.getElementsByClassName(tmp);
+    var tasknodes = document.querySelectorAll('input[class="'+tmp+'"]');
     if (tasknodes.length > 0){
         for (i = 0; i < tasknodes.length; i++) { 
           if(checkbox.checked){

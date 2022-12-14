@@ -5,13 +5,27 @@
 #         http://binux.me
 # Created on 2014-08-07 22:00:27
 
+import base64
+import hashlib
+import ipaddress
+import re
 import socket
 import struct
-import ipaddress
-import jinja2
-from tornado import gen
-from faker import Faker
+import urllib
+import uuid
 
+import jinja2
+from Crypto.Cipher import AES
+from faker import Faker
+from tornado import gen, httpclient
+
+import config
+from libs.convert import to_bytes, to_native, to_text
+from libs.mcrypto import aes_decrypt, aes_encrypt, passlib_or_crypt
+
+from .log import Log
+
+logger_Util = Log('qiandao.Http.Util').getlogger()
 def ip2int(addr):
     try:
         return struct.unpack("!I", socket.inet_aton(addr))[0]
@@ -23,6 +37,12 @@ def ip2varbinary(addr:str, version:int):
         return socket.inet_aton(addr)
     if version == 6:
         return socket.inet_pton(socket.AF_INET6,addr)
+ 
+def is_lan(ip):
+    try:
+        return ipaddress.ip_address(ip.strip()).is_private
+    except Exception as e:
+        return False
 
 def int2ip(addr):
     try:
@@ -69,6 +89,113 @@ def urlmatch(url):
     match = reobj.search(url)
     return match.group()
 
+def urlMatchWithLimit(url):
+    ip_middle_octet = r"(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5]))"
+    ip_last_octet = r"(?:\.(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5]))"
+
+    reobj = re.compile(  # noqa: W605
+        r"^"
+        # protocol identifier
+        r"(?:(?:https?|ftp)://)"
+        # user:pass authentication
+        r"(?:[-a-z\u00a1-\uffff0-9._~%!$&'()*+,;=:]+"
+        r"(?::[-a-z0-9._~%!$&'()*+,;=:]*)?@)?"
+        r"(?:"
+        r"(?P<private_ip>"
+        # IP address exclusion
+        # private & local networks
+        r"(?:(?:10|127)" + ip_middle_octet + r"{2}" + ip_last_octet + r")|"
+        r"(?:(?:169\.254|192\.168)" + ip_middle_octet + ip_last_octet + r")|"
+        r"(?:172\.(?:1[6-9]|2\d|3[0-1])" + ip_middle_octet + ip_last_octet + r"))"
+        r"|"
+        # private & local hosts
+        r"(?P<private_host>"
+        r"(?:localhost))"
+        r"|"
+        # IP address dotted notation octets
+        # excludes loopback network 0.0.0.0
+        # excludes reserved space >= 224.0.0.0
+        # excludes network & broadcast addresses
+        # (first & last IP address of each class)
+        r"(?P<public_ip>"
+        r"(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])"
+        r"" + ip_middle_octet + r"{2}"
+        r"" + ip_last_octet + r")"
+        r"|"
+        # IPv6 RegEx from https://stackoverflow.com/a/17871737
+        r"\[("
+        # 1:2:3:4:5:6:7:8
+        r"([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|"
+        # 1::                              1:2:3:4:5:6:7::
+        r"([0-9a-fA-F]{1,4}:){1,7}:|"
+        # 1::8             1:2:3:4:5:6::8  1:2:3:4:5:6::8
+        r"([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|"
+        # 1::7:8           1:2:3:4:5::7:8  1:2:3:4:5::8
+        r"([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|"
+        # 1::6:7:8         1:2:3:4::6:7:8  1:2:3:4::8
+        r"([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|"
+        # 1::5:6:7:8       1:2:3::5:6:7:8  1:2:3::8
+        r"([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|"
+        # 1::4:5:6:7:8     1:2::4:5:6:7:8  1:2::8
+        r"([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|"
+        # 1::3:4:5:6:7:8   1::3:4:5:6:7:8  1::8
+        r"[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|"
+        # ::2:3:4:5:6:7:8  ::2:3:4:5:6:7:8 ::8       ::
+        r":((:[0-9a-fA-F]{1,4}){1,7}|:)|"
+        # fe80::7:8%eth0   fe80::7:8%1
+        # (link-local IPv6 addresses with zone index)
+        r"fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|"
+        r"::(ffff(:0{1,4}){0,1}:){0,1}"
+        r"((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}"
+        # ::255.255.255.255   ::ffff:255.255.255.255  ::ffff:0:255.255.255.255
+        # (IPv4-mapped IPv6 addresses and IPv4-translated addresses)
+        r"(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|"
+        r"([0-9a-fA-F]{1,4}:){1,4}:"
+        r"((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}"
+        # 2001:db8:3:4::192.0.2.33  64:ff9b::192.0.2.33
+        # (IPv4-Embedded IPv6 Address)
+        r"(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])"
+        r")\]|"
+        # host name
+        r"(?:(?:(?:xn--[-]{0,2})|[a-z\u00a1-\uffff\U00010000-\U0010ffff0-9]-?)*"
+        r"[a-z\u00a1-\uffff\U00010000-\U0010ffff0-9]+)"
+        # domain name
+        r"(?:\.(?:(?:xn--[-]{0,2})|[a-z\u00a1-\uffff\U00010000-\U0010ffff0-9]-?)*"
+        r"[a-z\u00a1-\uffff\U00010000-\U0010ffff0-9]+)*"
+        # TLD identifier
+        r"(?:\.(?:(?:xn--[-]{0,2}[a-z\u00a1-\uffff\U00010000-\U0010ffff0-9]{2,})|"
+        r"[a-z\u00a1-\uffff\U00010000-\U0010ffff]{2,}))"
+        r")"
+        # port number
+        r"(?::\d{2,5})?"
+        # resource path
+        r"(?:/[-a-z\u00a1-\uffff\U00010000-\U0010ffff0-9._~%!$&'()*+,;=:@/]*)?"
+        # query string
+        r"(?:\?\S*)?"
+        # fragment
+        r"(?:#\S*)?"
+        r"$",
+        re.UNICODE | re.IGNORECASE
+    )
+    
+    match = reobj.search(url)
+    if match:
+        return match.group()
+    return ''
+
+def domainMatch(domain):
+    reobj = re.compile(
+        r'^(?:[a-zA-Z0-9]'  # First character of the domain
+        r'(?:[a-zA-Z0-9-_]{0,61}[A-Za-z0-9])?\.)'  # Sub domain + hostname
+        r'+[A-Za-z0-9][A-Za-z0-9-_]{0,61}'  # First 61 characters of the gTLD
+        r'[A-Za-z]$'  # Last character of the gTLD
+    )
+    
+    match = reobj.search(domain)
+    if match:
+        return match.group()
+    return ''
+
 def getLocalScheme(scheme):
     if scheme in ['http','https']:
         if config.https:
@@ -77,8 +204,10 @@ def getLocalScheme(scheme):
             return 'http'
     return scheme
 
-import umsgpack
 import functools
+
+import umsgpack
+
 
 def func_cache(f):
     _cache = {}
@@ -95,9 +224,14 @@ def func_cache(f):
 def method_cache(fn):
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
+        tmp = {}
+        for i in kwargs:
+            if i == 'sql_session':
+                continue
+            tmp[i] = kwargs[i]
         if not hasattr(self, '_cache'):
             self._cache = dict()
-        key = umsgpack.packb((args, kwargs))
+        key = umsgpack.packb((args, tmp))
         if key not in self._cache:
             self._cache[key] = fn(self, *args, **kwargs)
         return self._cache[key]
@@ -105,6 +239,7 @@ def method_cache(fn):
     return wrapper
 
 import datetime
+
 
 #full_format=True，的时候是具体时间，full_format=False就是几秒钟几分钟几小时时间格式----此处为模糊时间格式模式
 def format_date(date, gmt_offset=-8*60, relative=True, shorter=False, full_format=True):
@@ -193,15 +328,20 @@ def conver2unicode(string):
     tmp = bytes(tmp,'utf-8').decode('unicode_escape')
     return tmp.encode('utf-8').replace(b'\xc2\xa0',b'\xa0').decode('unicode_escape')
 
-import urllib
-import config
-from tornado import httpclient
-
+def to_bool(a):
+    ''' return a bool for the arg '''
+    if a is None or isinstance(a, bool):
+        return a
+    if isinstance(a, str):
+        a = a.lower()
+    if a in ('yes', 'on', '1', 'true', 1):
+        return True
+    return False
 
 async def send_mail(to, subject, text=None, html=None, shark=False, _from=u"签到提醒 <noreply@{}>".format(config.mail_domain)):
     if not config.mailgun_key:
         subtype = 'html' if html else 'plain'
-        _send_mail(to, subject, html or text or '', subtype)
+        await _send_mail(to, subject, html or text or '', subtype)
         return
 
     httpclient.AsyncHTTPClient.configure('tornado.curl_httpclient.CurlAsyncHTTPClient')
@@ -230,39 +370,37 @@ async def send_mail(to, subject, text=None, html=None, shark=False, _from=u"签�
         auth_password=config.mailgun_key,
         body=urllib.parse.urlencode(body)
     )
-    res = await gen.convert_yielded(client.fetch(req))
+    res = await client.fetch(req)
     return res
 
 
 import smtplib
 from email.mime.text import MIMEText
-import logging
-
-logger = logging.getLogger('qiandao.util')
 
 
-def _send_mail(to, subject, text=None, subtype='html'):
+async def _send_mail(to, subject, text=None, subtype='html'):
     if not config.mail_smtp:
-        logger.info('no smtp')
+        logger_Util.info('no smtp')
         return
     msg = MIMEText(text, _subtype=subtype, _charset='utf-8')
     msg['Subject'] = subject
     msg['From'] = config.mail_from
     msg['To'] = to
     try:
-        logger.info('send mail to {}'.format(to))
+        logger_Util.info('send mail to {}'.format(to))
         s = config.mail_ssl and smtplib.SMTP_SSL(config.mail_smtp) or smtplib.SMTP(config.mail_smtp)
         s.connect(config.mail_smtp)
         s.login(config.mail_user, config.mail_password)
         s.sendmail(config.mail_from, to, msg.as_string())
         s.close()
     except Exception as e:
-        logger.error('send mail error {}'.format(str(e)))
+        logger_Util.error('send mail error {}'.format(str(e)))
     return
 
 
 import chardet
-from requests.utils import get_encoding_from_headers, get_encodings_from_content
+from requests.utils import (get_encoding_from_headers,
+                            get_encodings_from_content)
 
 
 def find_encoding(content, headers=None):
@@ -305,7 +443,7 @@ def decode(content, headers=None):
     try:
         return content.decode(encoding, 'replace')
     except Exception as e:
-        print('utils.decode:',e)
+        logger_Util.error('utils.decode:',e)
         return None
 
 
@@ -318,11 +456,30 @@ def quote_chinese(url, encodeing="utf-8"):
     return "".join(res)
 
 
-import hashlib
-md5string = lambda x: hashlib.md5(utf8(x)).hexdigest()
+from hashlib import sha1
 
+try:
+    from hashlib import md5 as _md5
+except ImportError:
+    # Assume we're running in FIPS mode here
+    _md5 = None
+
+def secure_hash_s(data, hash_func=sha1):
+    ''' Return a secure hash hex digest of data. '''
+
+    digest = hash_func()
+    data = to_bytes(data, errors='surrogate_or_strict')
+    digest.update(data)
+    return digest.hexdigest()
+
+def md5string(data):
+    if not _md5:
+        raise ValueError('MD5 not available.  Possibly running in FIPS mode')
+    return secure_hash_s(data, _md5)
 
 import random
+
+
 def get_random(min_num, max_num, unit):
     random_num = random.uniform(min_num, max_num)
     result = "%.{0}f".format(int(unit)) % random_num
@@ -335,7 +492,21 @@ def random_fliter(*args, **kwargs):
         result = random.choice(*args, **kwargs)
     return result
 
+def randomize_list(mylist, seed=None):
+    try:
+        mylist = list(mylist)
+        if seed:
+            r = random.Random(seed)
+            r.shuffle(mylist)
+        else:
+            random.shuffle(mylist)
+    except Exception:
+        raise
+    return mylist
+
 import datetime
+
+
 def get_date_time(date=True, time=True, time_difference=0):
     if isinstance(date,str):
         date=int(date)
@@ -354,7 +525,102 @@ def get_date_time(date=True, time=True, time_difference=0):
     else:
         return ""
 
+def strftime(string_format, second=None):
+    ''' return a date string using string. See https://docs.python.org/3/library/time.html#time.strftime for format '''
+    if second is not None:
+        try:
+            second = float(second)
+        except Exception:
+            raise Exception('Invalid value for epoch value (%s)' % second)
+    return time.strftime(string_format, time.localtime(second))
+
+def regex_replace(value='', pattern='', replacement='', count=0, ignorecase=False, multiline=False):
+    ''' Perform a `re.sub` returning a string '''
+
+    value = to_text(value, errors='surrogate_or_strict', nonstring='simplerepr')
+
+    flags = 0
+    if ignorecase:
+        flags |= re.I
+    if multiline:
+        flags |= re.M
+    _re = re.compile(pattern, flags=flags)
+    return _re.sub(replacement, value, count)
+
+def regex_findall(value, pattern, ignorecase=False, multiline=False):
+    ''' Perform re.findall and return the list of matches '''
+
+    value = to_text(value, errors='surrogate_or_strict', nonstring='simplerepr')
+
+    flags = 0
+    if ignorecase:
+        flags |= re.I
+    if multiline:
+        flags |= re.M
+    return str(re.findall(pattern, value, flags))
+
+def regex_search(value, pattern, *args, **kwargs):
+    ''' Perform re.search and return the list of matches or a backref '''
+
+    value = to_text(value, errors='surrogate_or_strict', nonstring='simplerepr')
+
+    groups = list()
+    for arg in args:
+        if arg.startswith('\\g'):
+            match = re.match(r'\\g<(\S+)>', arg).group(1)
+            groups.append(match)
+        elif arg.startswith('\\'):
+            match = int(re.match(r'\\(\d+)', arg).group(1))
+            groups.append(match)
+        else:
+            raise Exception('Unknown argument')
+
+    flags = 0
+    if kwargs.get('ignorecase'):
+        flags |= re.I
+    if kwargs.get('multiline'):
+        flags |= re.M
+
+    match = re.search(pattern, value, flags)
+    if match:
+        if not groups:
+            return str(match.group())
+        else:
+            items = list()
+            for item in groups:
+                items.append(match.group(item))
+            return str(items)
+
+def ternary(value, true_val, false_val, none_val=None):
+    '''  value ? true_val : false_val '''
+    if (value is None or isinstance(value, jinja2.Undefined)) and none_val is not None:
+        return none_val
+    elif bool(value):
+        return true_val
+    else:
+        return false_val
+
+def regex_escape(value, re_type='python'):
+    value = to_text(value, errors='surrogate_or_strict', nonstring='simplerepr')
+    '''Escape all regular expressions special characters from STRING.'''
+    if re_type == 'python':
+        return re.escape(value)
+    elif re_type == 'posix_basic':
+        # list of BRE special chars:
+        # https://en.wikibooks.org/wiki/Regular_Expressions/POSIX_Basic_Regular_Expressions
+        return regex_replace(value, r'([].[^$*\\])', r'\\\1')
+    # TODO: implement posix_extended
+    # It's similar to, but different from python regex, which is similar to,
+    # but different from PCRE.  It's possible that re.escape would work here.
+    # https://remram44.github.io/regex-cheatsheet/regex.html#programs
+    elif re_type == 'posix_extended':
+        raise Exception('Regex type (%s) not yet implemented' % re_type)
+    else:
+        raise Exception('Invalid regex type (%s)' % re_type)
+
 import time
+
+
 def timestamp(type='int'):
     if type=='float':
         return time.time()
@@ -421,37 +687,148 @@ def is_num(s:str=''):
     else:
         return s.lstrip('-').isdigit()
 
+def get_hash(data, hashtype='sha1'):
+    try:
+        h = hashlib.new(hashtype)
+    except Exception as e:
+        # hash is not supported?
+        raise Exception(e)
+
+    h.update(to_bytes(data, errors='surrogate_or_strict'))
+    return h.hexdigest()
+
+def get_encrypted_password(password, hashtype='sha512', salt=None, salt_size=None, rounds=None, ident=None):
+    passlib_mapping = {
+        'md5': 'md5_crypt',
+        'blowfish': 'bcrypt',
+        'sha256': 'sha256_crypt',
+        'sha512': 'sha512_crypt',
+    }
+
+    hashtype = passlib_mapping.get(hashtype, hashtype)
+    return passlib_or_crypt(password, hashtype, salt=salt, salt_size=salt_size, rounds=rounds, ident=ident)
+
+def to_uuid(string, namespace=uuid.NAMESPACE_URL):
+    uuid_namespace = namespace
+    if not isinstance(uuid_namespace, uuid.UUID):
+        try:
+            uuid_namespace = uuid.UUID(namespace)
+        except (AttributeError, ValueError) as e:
+            raise Exception("Invalid value '%s' for 'namespace': %s" % (to_native(namespace), to_native(e)))
+    # uuid.uuid5() requires bytes on Python 2 and bytes or text or Python 3
+    return to_text(uuid.uuid5(uuid_namespace, to_native(string, errors='surrogate_or_strict')))
+
+def mandatory(a, msg=None):
+    from jinja2.runtime import Undefined
+
+    ''' Make a variable mandatory '''
+    if isinstance(a, Undefined):
+        if a._undefined_name is not None:
+            name = "'%s' " % to_text(a._undefined_name)
+        else:
+            name = ''
+
+        if msg is not None:
+            raise Exception(to_native(msg))
+        else:
+            raise Exception("Mandatory variable %s not defined." % name)
+
+    return a
+
+def b64encode(string, encoding='utf-8'):
+    return to_text(base64.b64encode(to_bytes(string, encoding=encoding, errors='surrogate_or_strict')))
+
+def b64decode(string, encoding='utf-8'):
+    return to_text(base64.b64decode(to_bytes(string, errors='surrogate_or_strict')), encoding=encoding)
+
+def switch_mode(mode):
+    mode = mode.upper()
+    if mode == 'CBC':
+        return AES.MODE_CBC
+    elif mode == 'ECB':
+        return AES.MODE_ECB
+    elif mode == 'CFB':
+        return AES.MODE_CFB
+    elif mode == 'OFB':
+        return AES.MODE_OFB
+    elif mode == 'CTR':
+        return AES.MODE_CTR
+    elif mode == 'OPENPGP':
+        return AES.MODE_OPENPGP
+    elif mode == 'GCM':
+        return AES.MODE_GCM
+    elif mode == 'CCM':
+        return AES.MODE_CCM
+    elif mode == 'SIV':
+        return AES.MODE_SIV
+    elif mode == 'OCB':
+        return AES.MODE_OCB
+    elif mode == 'EAX':
+        return AES.MODE_EAX
+    else:
+        raise Exception('Invalid AES mode: %s' % mode)
+
+def _aes_encrypt(word:str, key:str, mode='CBC', iv:str=None, output_format='base64', padding=True, padding_style='pkcs7', no_packb=True):
+    if key is None:
+        raise Exception('key is required')
+    mode = switch_mode(mode)
+    return aes_encrypt(word.encode("utf-8"), key.encode("utf-8"), mode=mode, iv=iv.encode("utf-8"), output=output_format, padding=padding, padding_style=padding_style, no_packb=no_packb)
+
+def _aes_decrypt(word:str, key:str, mode='CBC', iv:str=None, input_format='base64', padding=True, padding_style='pkcs7', no_packb=True):
+    if key is None:
+        raise Exception('key is required')
+    mode = switch_mode(mode)
+    return aes_decrypt(word.encode("utf-8"), key.encode("utf-8"), mode=mode, iv=iv.encode("utf-8"), input=input_format, padding=padding, padding_style=padding_style, no_packb=no_packb)
 
 jinja_globals = {
-    'md5': md5string,
+    # types
     'quote_chinese': quote_chinese,
+    'bool': to_bool,
     'utf8': utf8,
     'unicode': conver2unicode,
+    # time
     'timestamp': timestamp,
     'date_time': get_date_time,
+    # Calculate
     'is_num': is_num,
     'add': add,
     'sub': sub,
     'multiply': multiply,
     'divide': divide,
+    'Faker': Faker,
+    # base64
+    'b64decode': b64decode,
+    'b64encode': b64encode,
+    # uuid
+    'to_uuid': to_uuid,
+    # hash filters
+    # md5 hex digest of string
+    'md5': md5string,
+    # sha1 hex digest of string
+    'sha1': secure_hash_s,
+    # generic hashing
+    'password_hash': get_encrypted_password,
+    'hash': get_hash,
+    'aes_encrypt': _aes_encrypt,
+    'aes_decrypt': _aes_decrypt,
+    # regex
+    'regex_replace': regex_replace,
+    'regex_escape': regex_escape,
+    'regex_search': regex_search,
+    'regex_findall': regex_findall,
+    # ? : ;
+    'ternary': ternary,
+    # random stuff
     'random': random_fliter,
-    'Faker': Faker
+    'shuffle': randomize_list,
+    # undefined
+    'mandatory': mandatory,
+    # debug
+    'type_debug': lambda o: o.__class__.__name__,
 }
 
 jinja_inner_globals = {
     'dict': dict,
-    'lipsum': jinja2.utils.generate_lorem_ipsum
+    'lipsum': jinja2.utils.generate_lorem_ipsum,
+    'range': range,
 }
-
-import re
-def parse_url(url):
-    if not url:
-        return None
-    result = re.match('((?P<scheme>(https?|socks5h?)+)://)?((?P<username>[^:@/]+)(:(?P<password>[^@/]+))?@)?(?P<host>[^:@/]+):(?P<port>\d+)', url)
-    return None if not result else {
-        'scheme': result.group('scheme'),
-        'host': result.group('host'),
-        'port': int(result.group('port')),
-        'username': result.group('username'),
-        'password': result.group('password'),
-    }

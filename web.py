@@ -6,27 +6,26 @@
 # Created on 2014-07-30 12:38:34
 
 import sys
-import logging
-import tornado.log
-from tornado.ioloop import IOLoop
+
 from tornado.httpserver import HTTPServer
+from tornado.ioloop import IOLoop
 
 import config
+from libs.log import Log
 from web.app import Application
 
 if __name__ == "__main__":
     # init logging
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG if config.debug else logging.INFO)
-    channel = logging.StreamHandler(sys.stdout)
-    channel.setFormatter(tornado.log.LogFormatter())
-    logger.addHandler(channel)
+    logger_Web = Log("qiandao.Web").getlogger()
 
     if not config.debug:
+        import logging
+
+        import tornado.log
         channel = logging.StreamHandler(sys.stderr)
         channel.setFormatter(tornado.log.LogFormatter())
         channel.setLevel(logging.WARNING)
-        logger.addHandler(channel)
+        logger_Web.addHandler(channel)
 
     if len(sys.argv) > 2 and sys.argv[1] == '-p' and sys.argv[2].isdigit():
         port = int(sys.argv[2])
@@ -37,5 +36,5 @@ if __name__ == "__main__":
     http_server.bind(port, config.bind)
     http_server.start()
 
-    logging.info("http server started on %s:%s", config.bind, port)
+    logger_Web.info("http server started on %s:%s", config.bind, port)
     IOLoop.instance().start()

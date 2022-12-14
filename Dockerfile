@@ -14,22 +14,21 @@ LABEL org.opencontainers.image.source=https://github.com/qiandao-today/qiandao
 # 20210628 使用gitee作为代码源，添加密钥用于更新
 # 20210728 更换python版本为python3.8,默认包含redis
 # 20220203 更换alpine分支为edge,更换python版本为python3.10
+# 20220306 分离Redis与qiandao Docker
 
-ADD . /usr/src/app
+ADD ssh/qiandao_fetch /root/.ssh/id_rsa
+ADD ssh/qiandao_fetch.pub /root/.ssh/id_rsa.pub
 WORKDIR /usr/src/app
 
-# Setting openrc-redis
-RUN rc-status -a \
-    && echo -e '#!/bin/sh \nredis-server /etc/redis.conf' > /etc/local.d/redis.start \
-    && chmod +x /etc/local.d/redis.start \
-    && rc-update add local \
-    && rc-status -a 
+# # Setting openrc-redis
+# RUN rc-status -a \
+#     && echo -e '#!/bin/sh \nredis-server /etc/redis.conf' > /etc/local.d/redis.start \
+#     && chmod +x /etc/local.d/redis.start \
+#     && rc-update add local \
+#     && rc-status -a 
 
 # Qiandao
-RUN mkdir -p /root/.ssh \
-    && cp -f ssh/qiandao_fetch /root/.ssh/id_rsa \
-    && cp -f ssh/qiandao_fetch.pub /root/.ssh/id_rsa.pub \
-    && chmod 600 /root/.ssh/id_rsa \
+RUN chmod 600 /root/.ssh/id_rsa \
     && ssh-keyscan gitee.com > /root/.ssh/known_hosts \
     && let num=$RANDOM%100+10 \
     && sleep $num \
@@ -40,10 +39,10 @@ RUN mkdir -p /root/.ssh \
     && ln -s /usr/src/app/update.sh /bin/update
     
 # Pip install modules
-RUN apk add --update --no-cache openrc redis bash git tzdata nano openssh-client ca-certificates\
-        file libidn2-dev libgsasl-dev krb5-dev zstd-dev nghttp2-dev zlib-dev brotli-dev \
-        python3 py3-numpy-dev py3-pip py3-setuptools py3-wheel py3-opencv python3-dev  \
-        py3-pillow py3-markupsafe py3-pycryptodome py3-tornado py3-wrapt py3-packaging && \
+RUN apk add --update --no-cache python3 py3-pip py3-setuptools py3-wheel python3-dev py3-markupsafe py3-pycryptodome py3-tornado py3-wrapt py3-packaging py3-greenlet py3-urllib3 py3-cryptography && \
+    [[ $(getconf LONG_BIT) = "32" ]] && \
+    echo "Tips: 32-bit systems do not support ddddocr, so there is no need to install numpy and opencv-python" || \
+    apk add --update --no-cache py3-numpy-dev py3-opencv py3-pillow && \
     apk add --no-cache --virtual .build_deps cmake make perl autoconf g++ automake \
         linux-headers libtool util-linux && \
     sed -i '/ddddocr/d' requirements.txt && \
@@ -55,6 +54,9 @@ RUN apk add --update --no-cache openrc redis bash git tzdata nano openssh-client
     sed -i '/pillow/d' requirements.txt && \
     sed -i '/opencv/d' requirements.txt && \
     sed -i '/numpy/d' requirements.txt && \
+    sed -i '/greenlet/d' requirements.txt && \
+    sed -i '/urllib3/d' requirements.txt && \
+    sed -i '/cryptography/d' requirements.txt && \
     pip install --no-cache-dir -r requirements.txt && \
     apk del .build_deps && \
     rm -rf /var/cache/apk/* && \
@@ -67,7 +69,6 @@ EXPOSE $PORT/tcp
 ENV TZ=CST-8
 
 # 添加挂载点
-VOLUME ["/usr/src/app/","/data"]
+VOLUME ["/usr/src/app/config"]
 
-CMD ["sh","-c","redis-server --daemonize yes && python /usr/src/app/run.py"]
-
+CMD ["sh","-c","python /usr/src/app/run.py"]

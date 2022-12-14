@@ -5,17 +5,10 @@
 #         http://binux.me
 # Created on 2014-08-09 11:39:25
 
-import json
-import time
-import datetime
-import re
-
-import config
 import sqlite3
 
-from sqlite3_db.basedb import BaseDB
 
-class DBnew(BaseDB):
+class DBnew():
     def __init__(self, path):
         self.path = path        
                 
@@ -45,7 +38,6 @@ class DBnew(BaseDB):
                 `noticeflg` INT UNSIGNED NOT NULL DEFAULT 1,
                 `logtime`  VARBINARY(1024) NOT NULL DEFAULT '{"en":false,"time":"20:00:00","ts":0,"schanEn":false,"WXPEn":false}',
                 `status`  VARBINARY(1024) NOT NULL DEFAULT 'Enable',
-                `notepad` TEXT NULL,
                 `diypusher` VARBINARY(1024) NOT NULL DEFAULT '',
                 `qywx_token` VARBINARY(1024) NOT NULL DEFAULT '',
                 `tg_token` VARBINARY(1024) NOT NULL DEFAULT '',
@@ -128,6 +120,12 @@ class DBnew(BaseDB):
                 `logDay` INT UNSIGNED NOT NULL DEFAULT 365,
                 `repos` TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS `notepad` (
+                `id` INTEGER NOT NULL PRIMARY KEY,
+                `userid` INTEGER NOT NULL ,
+                `notepadid` INTEGER NOT NULL ,
+                `content` TEXT NULL
+                );
                 ''' )
 
             # 获取数据库信息            
@@ -147,6 +145,9 @@ class DBnew(BaseDB):
                     tasks.append(task)
                     for tasklog in maindb.db.tasklog.list(taskid = task['id'], fields=('id', "taskid", "success", "ctime", "msg")):
                         tasklogs.append(tasklog)
+
+            c.close()
+            conn.close()
 
              
         except Exception as e:

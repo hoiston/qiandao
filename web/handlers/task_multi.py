@@ -5,16 +5,18 @@
 #         http://binux.me
 # Created on 2014-08-09 11:39:25
 
-import json
-import traceback
 import datetime
-import time
+import json
 import random
+import time
+import traceback
 
 import croniter
 
-from .base import *
 from libs.funcs import cal
+
+from .base import *
+
 
 class TaskMultiOperateHandler(BaseHandler):
     @tornado.web.authenticated
@@ -31,14 +33,18 @@ class TaskMultiOperateHandler(BaseHandler):
             else:
                 raise Exception('错误参数')
             if (tasktype == 'setgroup'):
-                for task in self.db.task.list(user['id'], fields=('_groups'), limit=None):
+                for task in await self.db.task.list(user['id'], fields=('_groups',), limit=None):
+                    if not isinstance(task['_groups'], str):
+                        task['_groups'] = str(task['_groups'])
                     temp = task['_groups']
                     if (temp not  in _groups):
                         _groups.append(temp)
 
         except Exception as e:
-            traceback.print_exc()
+            if config.traceback_print:
+                traceback.print_exc()
             await self.render('utils_run_result.html', log=str(e), title=u'打开失败', flg='danger')
+            logger_Web_Handler.error('UserID: %s browse Task_Multi failed! Reason: %s', userid, str(e).replace('\\r\\n','\r\n'))
             return
 
         await self.render('taskmulti.html', user=user, tasktype=tasktype, _groups=_groups)
@@ -59,66 +65,75 @@ class TaskMultiOperateHandler(BaseHandler):
                     tasktype = tasktype.decode()
             else:
                 raise Exception('错误参数')
-            pass
             for k, v  in envs.items():
                 env[k] = json.loads(v[0])
+            if len(env['selectedtasks']) == 0:
+                raise Exception('请选择任务')
             for taskid, selected  in env['selectedtasks'].items():
                 if (selected):
-                    task = self.db.task.get(taskid, fields=('id',  'note', 'tplid', 'userid'))
-                    if (task):
-                        if (task['userid']) == int(userid):
-                            if (tasktype == 'disable'):
-                                self.db.task.mod(taskid, disabled = True)
-                            if (tasktype == 'enable'):
-                                self.db.task.mod(taskid, disabled = False)
-                            if (tasktype == 'delete'):
-                                logs = self.db.tasklog.list(taskid = taskid, fields=('id'))
-                                for log in logs:
-                                    self.db.tasklog.delete(log['id'])
-                                self.db.task.delete(taskid)
-                            if (tasktype == 'setgroup'):
-                                group_env = env['setgroup']
-                                New_group = group_env['newgroup'].strip()
-                                if New_group != "" :
-                                    target_group = New_group
-                                else:
-                                    target_group = group_env['checkgroupname'] or 'None'
+                    async with self.db.transaction() as sql_session:
+                        task = await self.db.task.get(taskid, fields=('id',  'note', 'tplid', 'userid'), sql_session=sql_session)
+                        if (task):
+                            if (task['userid']) == int(userid):
+                                if (tasktype == 'disable'):
+                                    await self.db.task.mod(taskid, disabled = True, sql_session=sql_session)
+                                if (tasktype == 'enable'):
+                                    await self.db.task.mod(taskid, disabled = False, sql_session=sql_session)
+                                if (tasktype == 'delete'):
+                                    logs = await self.db.tasklog.list(taskid = taskid, fields=('id',), sql_session=sql_session)
+                                    for log in logs:
+                                        await self.db.tasklog.delete(log['id'], sql_session=sql_session)
+                                    await self.db.task.delete(taskid, sql_session=sql_session)
+                                if (tasktype == 'setgroup'):
+                                    group_env = env['setgroup']
+                                    New_group = group_env['newgroup'].strip()
+                                    if New_group != "" :
+                                        target_group = New_group
+                                    else:
+                                        target_group = group_env['checkgroupname'] or 'None'
 
-                                self.db.task.mod(taskid, _groups=target_group)
+                                    await self.db.task.mod(taskid, _groups=target_group, sql_session=sql_session)
 
-                            if (tasktype == 'settime'):
-                                time_env = env['settime']
-                                c = cal()
-                                settime_env = {
-                                    'sw': True,
-                                    'time': time_env['ontime_val'],
-                                    'mode': time_env['ontime_method'],
-                                    'date': time_env['ontime_run_date'],
-                                    'tz1': time_env['randtimezone1'],
-                                    'tz2': time_env['randtimezone2'],
-                                    'cron_val': time_env['cron_val'],
-                                }
+                                if (tasktype == 'settime'):
+                                    time_env = env['settime']
+                                    c = cal()
+                                    settime_env = {
+                                        'sw': True,
+                                        'time': time_env['ontime_val'],
+                                        'mode': time_env['ontime_method'],
+                                        'date': time_env['ontime_run_date'],
+                                        'tz1': time_env['randtimezone1'],
+                                        'tz2': time_env['randtimezone2'],
+                                        'cron_val': time_env['cron_val'],
+                                    }
 
-                                if (time_env['randtimezone1'] != '') and (time_env['randtimezone1'] != ''):
-                                    settime_env['randsw'] = True 
-                                if (time_env['cron_sec'] != ''):
-                                    settime_env['cron_sec'] = time_env['cron_sec'] 
+                                    if (time_env['randtimezone1'] != '') and (time_env['randtimezone1'] != ''):
+                                        settime_env['randsw'] = True 
+                                    if (time_env['cron_sec'] != ''):
+                                        settime_env['cron_sec'] = time_env['cron_sec'] 
+                                    if (time_env['ontime_method'] == 'ontime'):
+                                        if (time_env['ontime_run_date'] == ''):
+                                            settime_env['date'] = time.strftime("%Y-%m-%d", time.localtime())
+                                        if (time_env['ontime_val'] == ''): 
+                                            settime_env['time'] = time.strftime("%H:%M:%S", time.localtime())
+                                    if (len(settime_env['time'].split(':')) == 2):
+                                        settime_env['time'] = settime_env['time'] + ':00'
 
-                                if (len(settime_env['time'].split(':')) == 2):
-                                    settime_env['time'] = settime_env['time'] + ':00'
-
-                                tmp = c.calNextTs(settime_env)
-                                if (tmp['r'] == 'True'):
-                                    self.db.task.mod(taskid, disabled = False, 
-                                                            newontime = json.dumps(settime_env), 
-                                                            next = tmp['ts'])
-                                else:
-                                    raise Exception(u'参数错误')
-                        else:
-                            raise Exception('用户id与任务的用户id不一致')
+                                    tmp = c.calNextTs(settime_env)
+                                    if (tmp['r'] == 'True'):
+                                        await self.db.task.mod(taskid, disabled = False, 
+                                                                newontime = json.dumps(settime_env), 
+                                                                next = tmp['ts'],
+                                                                sql_session=sql_session)
+                                    else:
+                                        raise Exception(u'参数错误')
+                            else:
+                                raise Exception('用户id与任务的用户id不一致')
         except Exception as e:
-            traceback.print_exc()
+            if config.traceback_print:
+                traceback.print_exc()
             await self.render('utils_run_result.html', log=str(e), title=u'设置失败', flg='danger')
+            logger_Web_Handler.error('UserID: %s set Task_Multi failed! Reason: %s', userid, str(e).replace('\\r\\n','\r\n'))
             return
 
         await self.render('utils_run_result.html', log=u'设置成功，请关闭操作对话框或刷新页面查看', title=u'设置成功', flg='success')
@@ -137,14 +152,16 @@ class GetTasksInfoHandler(BaseHandler):
                 if isinstance(selected[0],bytes):
                     selected[0] = selected[0].decode()
                 if (selected[0] == 'true'):
-                    task = self.db.task.get(taskid, fields=('id',  'note', 'tplid'))
+                    task = await self.db.task.get(taskid, fields=('id',  'note', 'tplid'))
                     if (task):
-                        sitename = self.db.tpl.get(task['tplid'], fields=('sitename'))['sitename']
+                        sitename = (await self.db.tpl.get(task['tplid'], fields=('sitename',)))['sitename']
                         task['sitename'] = sitename
                         tasks.append(task)
         except Exception as e:
-            traceback.print_exc()
+            if config.traceback_print:
+                traceback.print_exc()
             await self.render('utils_run_result.html', log=str(e), title=u'获取信息失败', flg='danger')
+            logger_Web_Handler.error('UserID: %s get Tasks_Info failed! Reason: %s', userid, str(e).replace('\\r\\n','\r\n'))
             return
 
         await self.render('taskmulti_tasksinfo.html',  tasks=tasks)

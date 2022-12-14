@@ -8,6 +8,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Nothing right now.
 
+## [20220911] - 2022.09.11 更新
+
+1. 允许用户选择定时任务执行方式
+2. 修复 DIYPusher 的 bug
+3. 其他优化和修复
+
+## [20220901] - 2022.09.01 更新
+
+1. 修复多个数据库转换问题
+2. 修复前端 header 无法勾选的问题
+3. 其他优化和修复
+
+## [20220828] - 2022.08.28 更新
+
+1. 添加多种 jinja2 过滤器并更新关于页面
+2. 添加 Ja3 Dockerfile
+3. 添加 curlToHAR feature close a76yyyy/qiandao#7
+4. 添加 单账号多记事本 feature close qiandao-today/qiandao#154
+5. 添加 SQLAlchemy ORM feature for qiandao-today/qiandao#253
+6. Debug 日志模式记录 Tornado Client 请求
+7. 优化公共模板更新性能, 仅 har version 更新时增量更新 content
+8. 优化定时任务执行性能, 实现生产者-消费者异步队列模型
+9. 其他优化和修复
+
+## [20220728] - 2022.07.28 更新
+
+1. 增加 if, else endif 关键字支持 (by [aa889788](https://github.com/qiandao-today/qiandao/commits?author=aa889788))
+2. 不允许在单条请求中测试循环或条件控制语句
+3. 添加控制语句API请求并修改插入API样式
+4. 修复因空格导致的任务分组选择出错 Fix qiandao-today/qiandao#275
+5. 其他优化和修复
+
+## [20220525] - 2022.05.25 更新
+
+1. 修复获取Cookie的Bug
+2. 更新getcookie按钮机制
+3. 修复保存har时Jinja Filter报错 Fix qiandao-today/qiandao#256
+4. 更新 jsdelivr CDN
+5. 修复分组名称以数字开头导致500报错 Fix qiandao-today/qiandao#261
+6. 支持单独删除失败日志 Fix a76yyyy/qiandao#14
+7. 定时页面显示单个任务是否已经定时
+8. 当config.debug为True时, traceback_print默认为True
+9. 手动执行任务失败后失败计次+1
+10. 工具箱添加总日志显示 feat qiandao-today/qiandao#161
+
+## [20220410] - 2022.04.10 更新
+
+1. 关闭私有IP用户及API请求的evil限制
+2. 优化网页端备份恢复数据库
+3. 优化前端js占用容器空间
+4. 添加源码方式更新容器重启提示
+5. 支持自定义onnx导入及ocr调用
+
+## [20220315] - 2022.03.15 更新
+
+1. 更新求模板链接
+2. 允许更多环境变量配置
+3. 修复记事本为空时追加报错的bug
+4. 控制access log的输出 (by [hiCasper](https://github.com/qiandao-today/qiandao/commits?author=hiCasper))
+5. 未验证的管理员开启验证邮箱时尝试发送验证邮件
+6. 优化Dockerfile,分离Redis
+7. 添加qiandao-lite相关说明和配置
+9. 统一DB连接操作,Cursor操作结束后自动关闭
+9. 优化日志输出, 避免重复日志
+
+> 源码部署更新方式如下, 如**更新后发生错误请重新拉取容器!**
+
+ ``` bash
+   # 先cd到源码所在目录, 执行命令后重启进程 
+   wget https://fastly.jsdelivr.net/gh/qiandao-today/qiandao@master/update.sh -O ./update.sh && \
+   sh ./update.sh 
+   ```
+
 ## [20220208] - 2022.02.08 更新
 
 1. 63c0074: 修复contenteditable=plaintext-only导致Firefox无法编辑的bug …
